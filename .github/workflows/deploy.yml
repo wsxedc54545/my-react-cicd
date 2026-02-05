@@ -1,0 +1,92 @@
+name: Deploy React to GitHub Pages
+
+on:
+  push:
+    branches: [ "main" ] # 只在推送到 main 時觸發部署
+  pull_request:
+    branches: [ "main" ] # PR 時只跑測試，不部署
+
+# 設定權限以允許部署與發布 Tag
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 鎖定 Node.js 版本並啟用快取
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci # 使用 ci 確保安裝版本與 package-lock.json 完全一致
+
+      # 品質檢查 (CI)
+      - name: Run Lint
+        run: npm run lint # 需確保 package.json 有此指令
+
+      - name: Run Tests
+        run: npm test -- --passWithNoTests # 簡易測試，若無測試檔也不會報錯
+
+      # 建置專案 (注入環境變數)
+      - name: Build Project
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+        run: npm run build
+
+      # 上傳構建產物 (供後續 Job 使用或下載檢查)
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: dist # Vite 預設輸出目錄
+          retention-days: 1 # 暫存 1 天即可
+
+  deploy:
+    # 只有是 Push 事件且 Build 成功才執行部署
+    needs: build-and-test
+    if: github.event_name == 'push'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: dist
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      # 自動建立版本 Tag (簡易版：使用時間戳記)
+      - name: Create Release Tag
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          TAG_NAME="v$(date +'%Y%m%d%H%M%S')"
+          git tag $TAG_NAME
+          git push origin $TAG_NAME
