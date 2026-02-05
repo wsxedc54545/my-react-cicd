@@ -2,11 +2,18 @@ name: Deploy React to GitHub Pages
 
 on:
   push:
-    branches: [ "main" ] # 只在推送到 main 時觸發部署
+    branches: ["main"] # push main：自動部署 + 打 tag
   pull_request:
-    branches: [ "main" ] # PR 時只跑測試，不部署
+    branches: ["main"] # PR：只跑 build-and-test
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "要部署/回滾的 git ref（tag / branch / commit SHA），留空代表使用預設分支"
+        required: false
+        type: string
 
-# 設定權限以允許部署與發布 Tag
+# 全域 permissions：先維持你原本設定（簡單好用）
+# 之後想更安全可再拆成 job-level 最小權限（延伸優化）
 permissions:
   contents: write
   pages: write
@@ -15,54 +22,55 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # push/PR 時 inputs.ref 不存在，會自動 fallback；手動回滾時可指定 tag/sha
+          ref: ${{ inputs.ref }} # checkout 支援 ref 指定 [web:169][web:160]
 
-      # 鎖定 Node.js 版本並啟用快取
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "20"
+          cache: "npm"
 
       - name: Install dependencies
-        run: npm ci # 使用 ci 確保安裝版本與 package-lock.json 完全一致
+        run: npm ci
 
-      # 品質檢查 (CI)
       - name: Run Lint
-        run: npm run lint # 需確保 package.json 有此指令
+        run: npm run lint
 
       - name: Run Tests
-        run: npm test -- --passWithNoTests # 簡易測試，若無測試檔也不會報錯
+        run: npm test
 
-      # 建置專案 (注入環境變數)
       - name: Build Project
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: npm run build
 
-      # 上傳構建產物 (供後續 Job 使用或下載檢查)
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: build-artifact
-          path: dist # Vite 預設輸出目錄
-          retention-days: 1 # 暫存 1 天即可
+          path: dist
+          retention-days: 1
 
   deploy:
-    # 只有是 Push 事件且 Build 成功才執行部署
     needs: build-and-test
-    if: github.event_name == 'push'
+    # PR 不部署；push + 手動才部署
+    if: github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }} # 手動回滾時也 checkout 同一個 ref [web:169][web:160]
 
       - name: Download Artifact
         uses: actions/download-artifact@v4
@@ -82,8 +90,9 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-      # 自動建立版本 Tag (簡易版：使用時間戳記)
+      # 只在 push main 的「正常發布」時打 tag；手動回滾不打 tag
       - name: Create Release Tag
+        if: github.event_name == 'push'
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
